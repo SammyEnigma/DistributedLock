@@ -499,10 +499,10 @@
           "DistributedLock.FileSystem": "[1.0.3, )",
           "DistributedLock.MongoDB": "[1.0.0, )",
           "DistributedLock.MySql": "[1.0.2, )",
-          "DistributedLock.Oracle": "[1.0.4, )",
+          "DistributedLock.Oracle": "[1.0.5, )",
           "DistributedLock.Postgres": "[1.3.0, )",
           "DistributedLock.Redis": "[1.1.1, )",
-          "DistributedLock.SqlServer": "[1.0.6, )",
+          "DistributedLock.SqlServer": "[1.0.7, )",
           "DistributedLock.WaitHandles": "[1.0.1, )",
           "DistributedLock.ZooKeeper": "[1.0.0, )"
         }
@@ -701,7 +701,7 @@
         "contentHash": "YECtByVSH7TRjQKplwOWiKyanCqYE5eEkGk5YtHJgsnbZ6+p1o0Gvs5RIsZLotiAVa6Niez1BJyKY/RDY/L6zg=="
       }
     },
-    ".NETFramework,Version=v4.7.2/win7-x86": {
+    ".NETFramework,Version=v4.7.2/win-x86": {
       "Microsoft.Win32.Registry": {
         "type": "Transitive",
         "resolved": "5.0.0",
@@ -816,9 +816,9 @@
     "net8.0": {
       "Microsoft.NET.ILLink.Tasks": {
         "type": "Direct",
-        "requested": "[8.0.4, )",
-        "resolved": "8.0.4",
-        "contentHash": "PZb5nfQ+U19nhnmnR9T1jw+LTmozhuG2eeuzuW5A7DqxD/UXW2ucjmNJqnqOuh8rdPzM3MQXoF8AfFCedJdCUw=="
+        "requested": "[8.0.26, )",
+        "resolved": "8.0.26",
+        "contentHash": "o7/yVssM2r9Wyln2s9edBd5ANZXqdSdBI+g7JqXkyJmXrhs2WsJp25K5yPnYrTgdKBCjKB8bg+O2oew4sgzFaA=="
       },
       "Azure.Core": {
         "type": "Transitive",
@@ -1167,10 +1167,10 @@
           "DistributedLock.FileSystem": "[1.0.3, )",
           "DistributedLock.MongoDB": "[1.0.0, )",
           "DistributedLock.MySql": "[1.0.2, )",
-          "DistributedLock.Oracle": "[1.0.4, )",
+          "DistributedLock.Oracle": "[1.0.5, )",
           "DistributedLock.Postgres": "[1.3.0, )",
           "DistributedLock.Redis": "[1.1.1, )",
-          "DistributedLock.SqlServer": "[1.0.6, )",
+          "DistributedLock.SqlServer": "[1.0.7, )",
           "DistributedLock.WaitHandles": "[1.0.1, )",
           "DistributedLock.ZooKeeper": "[1.0.0, )"
         }
@@ -1333,7 +1333,7 @@
         "contentHash": "YECtByVSH7TRjQKplwOWiKyanCqYE5eEkGk5YtHJgsnbZ6+p1o0Gvs5RIsZLotiAVa6Niez1BJyKY/RDY/L6zg=="
       }
     },
-    "net8.0/win7-x86": {
+    "net8.0/win-x86": {
       "Microsoft.Data.SqlClient.SNI.runtime": {
         "type": "Transitive",
         "resolved": "6.0.2",

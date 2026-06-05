@@ -208,7 +208,7 @@ internal class PostgresAdvisoryLock : IDbSynchronizationStrategy<object>
         var statementTimeout = await GetCurrentSetting("statement_timeout", connection, cancellationToken).ConfigureAwait(false);
         var lockTimeout = await GetCurrentSetting("lock_timeout", connection, cancellationToken).ConfigureAwait(false);
 
-        var capturedTimeoutSettings = new CapturedTimeoutSettings(statementTimeout!, lockTimeout!);
+        CapturedTimeoutSettings capturedTimeoutSettings = new(statementTimeout!, lockTimeout!);
 
         return capturedTimeoutSettings;
 
@@ -258,8 +258,8 @@ internal class PostgresAdvisoryLock : IDbSynchronizationStrategy<object>
         using var restoreTimeoutSettingsCommand = connection.CreateCommand();
 
         StringBuilder commandText = new();
-        commandText.AppendLine($"SET LOCAL statement_timeout = {settings.Value.StatementTimeout};");
-        commandText.AppendLine($"SET LOCAL lock_timeout = {settings.Value.LockTimeout};");
+        commandText.AppendLine($"SET LOCAL statement_timeout = '{settings.Value.StatementTimeout}';");
+        commandText.AppendLine($"SET LOCAL lock_timeout = '{settings.Value.LockTimeout}';");
         
         restoreTimeoutSettingsCommand.SetCommandText(commandText.ToString());
 
@@ -334,13 +334,14 @@ internal class PostgresAdvisoryLock : IDbSynchronizationStrategy<object>
 
     private readonly struct CapturedTimeoutSettings(string statementTimeout, string lockTimeout)
     {
-        public int StatementTimeout { get; } = ParsePostgresTimeout(statementTimeout);
+        public string StatementTimeout { get; } = ValidatePostgresTimeout(statementTimeout);
 
-        public int LockTimeout { get; } = ParsePostgresTimeout(lockTimeout);
+        public string LockTimeout { get; } = ValidatePostgresTimeout(lockTimeout);
 
-        private static int ParsePostgresTimeout(string timeout) =>
-            Regex.Match(timeout, @"^\d+(?=(?:ms)?$)") is { Success: true, Value: var value }
-                ? int.Parse(value)
-                : throw new FormatException($"Unexpected timeout setting value '{timeout}'");
+        private static string ValidatePostgresTimeout(string timeout) =>
+            // make sure it's safe to use as a SQL literal
+            timeout.IndexOfAny(['\'', '\\']) >= 0
+                ? throw new FormatException($"Unexpected timeout setting value '{timeout}'")
+                : timeout;
     }
 }
