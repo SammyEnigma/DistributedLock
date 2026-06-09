@@ -205,21 +205,13 @@ internal class PostgresAdvisoryLock : IDbSynchronizationStrategy<object>
         // Return null in case we won't try to acquire an externally-owned transaction-scoped lock.
         if (!shouldCaptureTimeoutSettings) { return null; }
 
-        var statementTimeout = await GetCurrentSetting("statement_timeout", connection, cancellationToken).ConfigureAwait(false);
-        var lockTimeout = await GetCurrentSetting("lock_timeout", connection, cancellationToken).ConfigureAwait(false);
-
-        CapturedTimeoutSettings capturedTimeoutSettings = new(statementTimeout!, lockTimeout!);
-
-        return capturedTimeoutSettings;
-
-        async ValueTask<string?> GetCurrentSetting(string settingName, DatabaseConnection connection, CancellationToken cancellationToken)
-        {
-            using var getCurrentSettingCommand = connection.CreateCommand();
-
-            getCurrentSettingCommand.SetCommandText($"SELECT current_setting('{settingName}', 'true') AS {settingName};");
-
-            return (string?)await getCurrentSettingCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-        }
+        using var getCurrentSettingCommand = connection.CreateCommand();
+        getCurrentSettingCommand.SetCommandText("SELECT current_setting('statement_timeout') || '|' || current_setting('lock_timeout') AS timeouts");
+        var timeouts = ((string)(await getCurrentSettingCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!)
+            .Split('|');
+        return timeouts.Length == 2
+            ? new CapturedTimeoutSettings(statementTimeout: timeouts[0], lockTimeout: timeouts[1])
+            : throw new InvalidOperationException($"Unexpected statement_timeout|lock_timeout value '{string.Join("|", timeouts)}'");
     }
 
     private static async ValueTask<bool> ShouldDefineSavePoint(DatabaseConnection connection)
