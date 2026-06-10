@@ -28,6 +28,7 @@ public sealed partial class MongoDistributedLock : IInternalDistributedLock<Mong
     private static readonly BsonValue FencingTokenFieldRef = "$fencingToken";
     private static readonly BsonValue LockIdFieldRef = "$lockId";
     private static readonly BsonValue NowRef = "$$NOW";
+    private static readonly BsonValue MillisecondRef = "millisecond";
 
     private readonly string _collectionName;
     private readonly MongoDistributedLockOptions _options;
@@ -136,7 +137,7 @@ public sealed partial class MongoDistributedLock : IInternalDistributedLock<Mong
             new BsonDocument
             {
                 { "startDate", NowRef },
-                { "unit", "millisecond" },
+                { "unit", MillisecondRef },
                 { "amount", this._options.Expiry.InMilliseconds }
             }
         );
@@ -237,7 +238,7 @@ public sealed partial class MongoDistributedLock : IInternalDistributedLock<Mong
                         new BsonDocument
                         {
                             { "startDate", NowRef },
-                            { "unit", "millisecond" },
+                            { "unit", MillisecondRef },
                             { "amount", this._lock._options.Expiry.InMilliseconds }
                         }
                     )))
