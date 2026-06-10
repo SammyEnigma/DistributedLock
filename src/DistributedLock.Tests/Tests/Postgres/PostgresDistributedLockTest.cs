@@ -78,7 +78,8 @@ public class PostgresDistributedLockTest
     }
 
     [Test]
-    public async Task TestWorksWithAmbientTransaction()
+    public async Task TestWorksWithAmbientTransaction(
+        [Values("1010ms", "1d", "5min", "20h", "3s")] string timeout)
     {
         using var connection = new NpgsqlConnection(TestingPostgresDb.DefaultConnectionString);
         await connection.OpenAsync();
@@ -92,24 +93,24 @@ public class PostgresDistributedLockTest
             using var transactionCommand = connection.CreateCommand();
             transactionCommand.Transaction = transaction;
 
-            transactionCommand.CommandText = "SET LOCAL statement_timeout = 1010";
+            transactionCommand.CommandText = $"SET LOCAL statement_timeout = '{timeout}'";
             await transactionCommand.ExecuteNonQueryAsync();
 
             using (var timedOutHandle = await connectionLock.TryAcquireAsync(TimeSpan.FromSeconds(.2)))
             {
-                (await GetTimeoutAsync("statement_timeout", transactionCommand)).ShouldEqual("1010ms");
+                (await GetTimeoutAsync("statement_timeout", transactionCommand)).ShouldEqual(timeout);
 
                 Assert.That(timedOutHandle, Is.Null);
             }
 
-            (await GetTimeoutAsync("statement_timeout", transactionCommand)).ShouldEqual("1010ms");
+            (await GetTimeoutAsync("statement_timeout", transactionCommand)).ShouldEqual(timeout);
 
             var cancellationTokenSource = new CancellationTokenSource(TimeSpan.FromSeconds(.3));
             var task = connectionLock.AcquireAsync(cancellationToken: cancellationTokenSource.Token).AsTask();
             task.ContinueWith(_ => { }).Wait(TimeSpan.FromSeconds(5)).ShouldEqual(true);
             task.Status.ShouldEqual(TaskStatus.Canceled);
 
-            (await GetTimeoutAsync("statement_timeout", transactionCommand)).ShouldEqual("1010ms");
+            (await GetTimeoutAsync("statement_timeout", transactionCommand)).ShouldEqual(timeout);
         }
 
         using var connectionCommand = connection.CreateCommand();

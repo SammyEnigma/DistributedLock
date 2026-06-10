@@ -205,21 +205,13 @@ internal class PostgresAdvisoryLock : IDbSynchronizationStrategy<object>
         // Return null in case we won't try to acquire an externally-owned transaction-scoped lock.
         if (!shouldCaptureTimeoutSettings) { return null; }
 
-        var statementTimeout = await GetCurrentSetting("statement_timeout", connection, cancellationToken).ConfigureAwait(false);
-        var lockTimeout = await GetCurrentSetting("lock_timeout", connection, cancellationToken).ConfigureAwait(false);
-
-        var capturedTimeoutSettings = new CapturedTimeoutSettings(statementTimeout!, lockTimeout!);
-
-        return capturedTimeoutSettings;
-
-        async ValueTask<string?> GetCurrentSetting(string settingName, DatabaseConnection connection, CancellationToken cancellationToken)
-        {
-            using var getCurrentSettingCommand = connection.CreateCommand();
-
-            getCurrentSettingCommand.SetCommandText($"SELECT current_setting('{settingName}', 'true') AS {settingName};");
-
-            return (string?)await getCurrentSettingCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-        }
+        using var getCurrentSettingCommand = connection.CreateCommand();
+        getCurrentSettingCommand.SetCommandText("SELECT current_setting('statement_timeout') || '|' || current_setting('lock_timeout') AS timeouts");
+        var timeouts = ((string)(await getCurrentSettingCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!)
+            .Split('|');
+        return timeouts.Length == 2
+            ? new CapturedTimeoutSettings(statementTimeout: timeouts[0], lockTimeout: timeouts[1])
+            : throw new InvalidOperationException($"Unexpected statement_timeout|lock_timeout value '{string.Join("|", timeouts)}'");
     }
 
     private static async ValueTask<bool> ShouldDefineSavePoint(DatabaseConnection connection)
@@ -258,8 +250,8 @@ internal class PostgresAdvisoryLock : IDbSynchronizationStrategy<object>
         using var restoreTimeoutSettingsCommand = connection.CreateCommand();
 
         StringBuilder commandText = new();
-        commandText.AppendLine($"SET LOCAL statement_timeout = {settings.Value.StatementTimeout};");
-        commandText.AppendLine($"SET LOCAL lock_timeout = {settings.Value.LockTimeout};");
+        commandText.AppendLine($"SET LOCAL statement_timeout = '{settings.Value.StatementTimeout}';");
+        commandText.AppendLine($"SET LOCAL lock_timeout = '{settings.Value.LockTimeout}';");
         
         restoreTimeoutSettingsCommand.SetCommandText(commandText.ToString());
 
@@ -334,13 +326,14 @@ internal class PostgresAdvisoryLock : IDbSynchronizationStrategy<object>
 
     private readonly struct CapturedTimeoutSettings(string statementTimeout, string lockTimeout)
     {
-        public int StatementTimeout { get; } = ParsePostgresTimeout(statementTimeout);
+        public string StatementTimeout { get; } = ValidatePostgresTimeout(statementTimeout);
 
-        public int LockTimeout { get; } = ParsePostgresTimeout(lockTimeout);
+        public string LockTimeout { get; } = ValidatePostgresTimeout(lockTimeout);
 
-        private static int ParsePostgresTimeout(string timeout) =>
-            Regex.Match(timeout, @"^\d+(?=(?:ms)?$)") is { Success: true, Value: var value }
-                ? int.Parse(value)
-                : throw new FormatException($"Unexpected timeout setting value '{timeout}'");
+        private static string ValidatePostgresTimeout(string timeout) =>
+            // make sure it's safe to use as a SQL literal
+            timeout.IndexOfAny(['\'', '\\']) >= 0
+                ? throw new FormatException($"Unexpected timeout setting value '{timeout}'")
+                : timeout;
     }
 }
