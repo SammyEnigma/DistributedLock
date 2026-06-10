@@ -1,7 +1,6 @@
 using Medallion.Threading.Internal;
 using MongoDB.Bson;
 using MongoDB.Driver;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 
 namespace Medallion.Threading.MongoDB;
@@ -21,9 +20,19 @@ public sealed partial class MongoDistributedLock : IInternalDistributedLock<Mong
     /// </summary>
     internal static readonly ActivitySource ActivitySource = new("DistributedLock.MongoDB", "1.0.0");
 
+    // Safe static caches: BsonDateTime and BsonValue wrappers are immutable,
+    // so they can be safely shared across threads and driver calls without risk of mutation.
+    private static readonly BsonDateTime EpochBsonDateTime = new(EpochUtc);
+    private static readonly BsonValue ExpiresAtFieldRef = "$expiresAt";
+    private static readonly BsonValue AcquiredAtFieldRef = "$acquiredAt";
+    private static readonly BsonValue FencingTokenFieldRef = "$fencingToken";
+    private static readonly BsonValue LockIdFieldRef = "$lockId";
+    private static readonly BsonValue NowRef = "$$NOW";
+    private static readonly BsonValue MillisecondRef = "millisecond";
+
     private readonly string _collectionName;
-    private readonly IMongoDatabase _database;
     private readonly MongoDistributedLockOptions _options;
+    private readonly Lazy<IMongoCollection<MongoLockDocument>> _collection;
 
     /// <summary>
     /// The MongoDB key used to implement the lock
@@ -47,14 +56,18 @@ public sealed partial class MongoDistributedLock : IInternalDistributedLock<Mong
     /// <paramref name="options" />.
     /// </summary>
     public MongoDistributedLock(string key, IMongoDatabase database, string collectionName, Action<MongoDistributedSynchronizationOptionsBuilder>? options = null)
+        : this(key, database, collectionName, MongoDistributedSynchronizationOptionsBuilder.GetOptions(options)) { }
+
+    internal MongoDistributedLock(string key, IMongoDatabase database, string collectionName, MongoDistributedLockOptions options)
     {
-        this._database = database ?? throw new ArgumentNullException(nameof(database));
+        var validatedDatabase = database ?? throw new ArgumentNullException(nameof(database));
         this._collectionName = collectionName ?? throw new ArgumentNullException(nameof(collectionName));
         // From what I can tell, modern (and all supported) MongoDB versions have no limits on index keys or
         // _id lengths other than the 16MB document limit. This is so high that providing "safe name" functionality as a fallback doesn't
         // see worth it.
         this.Key = key ?? throw new ArgumentNullException(nameof(key));
-        this._options = MongoDistributedSynchronizationOptionsBuilder.GetOptions(options);
+        this._options = options;
+        this._collection = new(() => validatedDatabase.GetCollection<MongoLockDocument>(this._collectionName));
     }
 
     ValueTask<MongoDistributedLockHandle?> IInternalDistributedLock<MongoDistributedLockHandle>.InternalTryAcquireAsync(TimeoutValue timeout, CancellationToken cancellationToken) =>
@@ -71,16 +84,16 @@ public sealed partial class MongoDistributedLock : IInternalDistributedLock<Mong
         activity?.SetTag("lock.key", this.Key);
         activity?.SetTag("lock.collection", this._collectionName);
 
-        var collection = this._database.GetCollection<MongoLockDocument>(this._collectionName);
-
         // Use a unique token per acquisition attempt (like Redis' value token)
         var lockId = Guid.NewGuid().ToString("N");
-        
+
+        var collection = this._collection.Value;
+
         // We avoid exception-driven contention (DuplicateKey) by using a single upsert on {_id == Key}
         // and an update pipeline that only overwrites fields when the existing lock is expired.
         // This is conceptually similar to Redis: SET key value NX PX <expiry>.
         var filter = Builders<MongoLockDocument>.Filter.Eq(d => d.Id, this.Key);
-        var update = CreateAcquireUpdate(lockId, this._options.Expiry);
+        var update = this.CreateAcquireUpdate(lockId);
         var options = new FindOneAndUpdateOptions<MongoLockDocument>
         {
             IsUpsert = true,
@@ -94,6 +107,8 @@ public sealed partial class MongoDistributedLock : IInternalDistributedLock<Mong
         // Verify we actually got the lock
         if (result?.LockId == lockId)
         {
+            // Fire-and-forget TTL index creation only on successful acquire to avoid
+            // unnecessary DB calls when the lock is contended.
             _ = IndexInitializer.InitializeTtlIndex(collection);
             activity?.SetTag("lock.acquired", true);
             activity?.SetTag("lock.fencing_token", result.FencingToken);
@@ -103,17 +118,17 @@ public sealed partial class MongoDistributedLock : IInternalDistributedLock<Mong
         return null;
     }
 
-    private static UpdateDefinition<MongoLockDocument> CreateAcquireUpdate(string lockId, TimeoutValue expiry)
+    private UpdateDefinition<MongoLockDocument> CreateAcquireUpdate(string lockId)
     {
-        Invariant.Require(!expiry.IsInfinite);
+        Invariant.Require(!this._options.Expiry.IsInfinite);
 
         // expired := ifNull(expiresAt, epoch) <= $$NOW
         var expiredOrMissing = new BsonDocument(
             "$lte",
             new BsonArray
             {
-                new BsonDocument("$ifNull", new BsonArray { "$expiresAt", new BsonDateTime(EpochUtc) }),
-                "$$NOW"
+                new BsonDocument("$ifNull", new BsonArray { ExpiresAtFieldRef, EpochBsonDateTime }),
+                NowRef
             }
         );
 
@@ -121,9 +136,9 @@ public sealed partial class MongoDistributedLock : IInternalDistributedLock<Mong
             "$dateAdd",
             new BsonDocument
             {
-                { "startDate", "$$NOW" },
-                { "unit", "millisecond" },
-                { "amount", expiry.InMilliseconds }
+                { "startDate", NowRef },
+                { "unit", MillisecondRef },
+                { "amount", this._options.Expiry.InMilliseconds }
             }
         );
 
@@ -132,7 +147,7 @@ public sealed partial class MongoDistributedLock : IInternalDistributedLock<Mong
             "$add",
             new BsonArray
             {
-                new BsonDocument("$ifNull", new BsonArray { "$fencingToken", 0L }),
+                new BsonDocument("$ifNull", new BsonArray { FencingTokenFieldRef, 0L }),
                 1L
             }
         );
@@ -142,10 +157,10 @@ public sealed partial class MongoDistributedLock : IInternalDistributedLock<Mong
             new BsonDocument
             {
                 // Only overwrite lock fields when the previous lock is expired/missing
-                { nameof(lockId), new BsonDocument("$cond", new BsonArray { expiredOrMissing, lockId, "$lockId" }) },
-                { "expiresAt", new BsonDocument("$cond", new BsonArray { expiredOrMissing, newExpiresAt, "$expiresAt" }) },
-                { "acquiredAt", new BsonDocument("$cond", new BsonArray { expiredOrMissing, "$$NOW", "$acquiredAt" }) },
-                { "fencingToken", new BsonDocument("$cond", new BsonArray { expiredOrMissing, newFencingToken, "$fencingToken" }) }
+                { nameof(lockId), new BsonDocument("$cond", new BsonArray { expiredOrMissing, lockId, LockIdFieldRef }) },
+                { "expiresAt", new BsonDocument("$cond", new BsonArray { expiredOrMissing, newExpiresAt, ExpiresAtFieldRef }) },
+                { "acquiredAt", new BsonDocument("$cond", new BsonArray { expiredOrMissing, NowRef, AcquiredAtFieldRef }) },
+                { "fencingToken", new BsonDocument("$cond", new BsonArray { expiredOrMissing, newFencingToken, FencingTokenFieldRef }) }
             }
         );
 
@@ -159,10 +174,14 @@ public sealed partial class MongoDistributedLock : IInternalDistributedLock<Mong
     internal sealed class InnerHandle : IAsyncDisposable, LeaseMonitor.ILeaseHandle
     {
         private readonly MongoDistributedLock _lock;
-        private readonly string _lockId;
         private readonly IMongoCollection<MongoLockDocument> _collection;
         private readonly LeaseMonitor _monitor;
-        
+
+        // Cached filter to avoid repeated allocations during renewal and release
+        private readonly FilterDefinition<MongoLockDocument> _ownerFilter;
+        // Lazily initialized: most locks are released quickly and never need renewal
+        private PipelineUpdateDefinition<MongoLockDocument>? _renewUpdate;
+
         public CancellationToken HandleLostToken => this._monitor.HandleLostToken;
 
         TimeoutValue LeaseMonitor.ILeaseHandle.LeaseDuration => this._lock._options.Expiry;
@@ -171,50 +190,62 @@ public sealed partial class MongoDistributedLock : IInternalDistributedLock<Mong
         public InnerHandle(MongoDistributedLock @lock, string lockId, IMongoCollection<MongoLockDocument> collection)
         {
             this._lock = @lock;
-            this._lockId = lockId;
             this._collection = collection;
+
+            // Cache the filter that identifies this specific lock ownership
+            this._ownerFilter = Builders<MongoLockDocument>.Filter.Eq(d => d.Id, @lock.Key)
+                & Builders<MongoLockDocument>.Filter.Eq(d => d.LockId, lockId);
+
             // important to set this last, since the monitor constructor will read other fields of this
             this._monitor = new(this);
         }
 
         public async ValueTask DisposeAsync()
         {
-            try { await this._monitor.DisposeAsync().ConfigureAwait(false); }
-            finally { await this.ReleaseLockAsync().ConfigureAwait(false); }
+            try
+            {
+                await this._monitor.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                await this.ReleaseLockAsync().ConfigureAwait(false);
+            }
         }
 
         private async ValueTask ReleaseLockAsync()
         {
-            var filter = Builders<MongoLockDocument>.Filter.Eq(d => d.Id, this._lock.Key) & Builders<MongoLockDocument>.Filter.Eq(d => d.LockId, this._lockId);
             if (SyncViaAsync.IsSynchronous)
             {
-                this._collection.DeleteOne(filter);
+                // ReSharper disable once MethodHasAsyncOverload
+                this._collection.DeleteOne(this._ownerFilter);
             }
             else
             {
-                await this._collection.DeleteOneAsync(filter).ConfigureAwait(false);
+                // Do not use HandleLostToken here: the monitor (and its CancellationTokenSource) is
+                // already disposed before ReleaseLockAsync is called from DisposeAsync.
+                await this._collection.DeleteOneAsync(this._ownerFilter, CancellationToken.None).ConfigureAwait(false);
             }
         }
 
         async Task<LeaseMonitor.LeaseState> LeaseMonitor.ILeaseHandle.RenewOrValidateLeaseAsync(CancellationToken cancellationToken)
         {
-            var filter = Builders<MongoLockDocument>.Filter.Eq(d => d.Id, this._lock.Key) & Builders<MongoLockDocument>.Filter.Eq(d => d.LockId, this._lockId);
-
-            // Use server time ($$NOW) for expiry to avoid client clock skew.
-            var newExpiresAt = new BsonDocument(
-                "$dateAdd",
-                new BsonDocument
+            // Lazily create the renewal update on first use to avoid allocations for short-lived locks
+            this._renewUpdate ??= new PipelineUpdateDefinition<MongoLockDocument>(
+                new[]
                 {
-                    { "startDate", "$$NOW" },
-                    { "unit", "millisecond" },
-                    { "amount", this._lock._options.Expiry.InMilliseconds }
+                    new BsonDocument("$set", new BsonDocument("expiresAt", new BsonDocument(
+                        "$dateAdd",
+                        new BsonDocument
+                        {
+                            { "startDate", NowRef },
+                            { "unit", MillisecondRef },
+                            { "amount", this._lock._options.Expiry.InMilliseconds }
+                        }
+                    )))
                 }
             );
-            var update = new PipelineUpdateDefinition<MongoLockDocument>(
-                new[] { new BsonDocument("$set", new BsonDocument("expiresAt", newExpiresAt)) }
-            );
 
-            var result = await this._collection.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var result = await this._collection.UpdateOneAsync(this._ownerFilter, this._renewUpdate, cancellationToken: cancellationToken).ConfigureAwait(false);
             return result.MatchedCount > 0 ? LeaseMonitor.LeaseState.Renewed : LeaseMonitor.LeaseState.Lost;
         }
     }
