@@ -142,6 +142,9 @@ Setup steps for working with the repository locally are documented [here](docs/D
 
 ## Release notes
 
+- 2.8.2
+  - Fix support for Postgres instances with timeout settings using units other than millisecond ([#277](https://github.com/madelson/DistributedLock/issues/277), DistributedLock.Postgres 1.3.1)
+  - Reduce allocations in MongoDB locks ([#276](https://github.com/madelson/DistributedLock/pull/276)). Thanks [@joesdu](https://github.com/joesdu) for implementing! 
 - 2.8.1
 	- Fix connection monitoring query on Oracle. Thanks [@matthew-marston](https://github.com/matthew-marston) for implementing! ([#271](https://github.com/madelson/DistributedLock/issues/271), DistributedLock.Oracle 1.0.5)
 	- Bump Microsoft.Data.SqlClient version ([#273](https://github.com/madelson/DistributedLock/issues/273), DistributedLock.SqlServer 1.0.7)
