@@ -142,6 +142,8 @@ Setup steps for working with the repository locally are documented [here](docs/D
 
 ## Release notes
 
+- 2.8.3
+  - Bump MongoDB.Driver to avoid pulling in vulnerable packages ([#281](https://github.com/madelson/DistributedLock/pull/281), DistributedLock.MongoDB 1.0.2). Thanks [@Thynix](https://github.com/Thynix) for implementing!
 - 2.8.2
   - Fix support for Postgres instances with timeout settings using units other than millisecond ([#277](https://github.com/madelson/DistributedLock/issues/277), DistributedLock.Postgres 1.3.1)
   - Reduce allocations in MongoDB locks ([#276](https://github.com/madelson/DistributedLock/pull/276), DistributedLock.MongoDB 1.0.1). Thanks [@joesdu](https://github.com/joesdu) for implementing! 
